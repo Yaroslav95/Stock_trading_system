@@ -1,0 +1,623 @@
+//+------------------------------------------------------------------+
+//|                                      My_Stock_trading_system.mq5 |
+//|                                                Sapronov Yaroslav | 
+//+------------------------------------------------------------------+
+//| Include                                                          |
+//+------------------------------------------------------------------+
+#include <Expert\Expert.mqh>
+//--- available signals
+#include <Expert\Signal\SignalAC.mqh>
+#include <Expert\Signal\SignalAO.mqh>
+#include <Expert\Signal\SignalSAR.mqh>
+#include <Expert\Signal\SignalRSI.mqh>
+#include <Expert\Signal\SignalStoch.mqh>
+//--- available trailing
+#include <Expert\Trailing\My_TrailingFixedPips.mqh>
+#include <Expert\Trailing\My_TrailingParabolicSAR.mqh>
+//--- available money management
+#include <Expert\Money\My_MoneyFixedRisk.mqh>
+#include <Expert\MyMoney\MoneyF1F2.mqh>
+#include <Expert\Customoptimization\customoptimisation.mqh>
+#include <Expert\Money\MoneyNone.mqh>
+//--- available operations
+#include <Math\Stat\Math.mqh>
+#include <Trade\SymbolInfo.mqh>
+#include <Trade\PositionInfo.mqh>
+#include <Trade\Trade.mqh>
+//+------------------------------------------------------------------+
+//| Inputs                                                           |
+//+------------------------------------------------------------------+
+//--- inputs for expert
+input string             Expert_Title           ="My_Stock_trading_system"; 
+ulong                    Expert_MagicNumber     =2185;                     
+bool                     Expert_EveryTick       =false;                 
+//--- inputs for main signal
+input int                Signal_ThresholdOpen   =10;          // Signal threshold value to open 
+input int                Signal_ThresholdClose  =10;          // Signal threshold value to close
+input double             Signal_StopLevel       =0.0;         // Stop Loss level (in points)
+//--- inputs for trailing
+input int                Trailing_FixedPips_StopLevel  =30;   // Stop Loss trailing level (in points)
+ //--- inputs for money
+input double             Money_Factor1 = 1;
+input double             Money_Factor2 = 1;
+
+int                      Trailing_FixedPips_ProfitLevel=0;    // Take Profit trailing level (in points) 
+double                   Signal_PriceLevel      =0.0;         // Price level to execute a deal
+double                   Signal_TakeLevel       =0.0;         // Take Profit level (in points)
+int                      Signal_Expiration      =0;           // Expiration of pending orders (in bars)
+double                   Money_MyFixRisk_Percent=-1;          // Risk percentage
+int                      ivar_used = 1;                       // 0 - iVar не используется, 1 - используется
+input double             var_ques = 0.0;
+input int                N_iVar=5;                            // период индикатора N 
+int                      Mode_Testing = 0;                    // ModeTesting. 0 - Открытие, -1 - реал
+int                      Trading_mode = 1;                    // Trading_mode. 1 - Fix, 2 - SAR
+
+CPositionInfo           m_position;                           // trade position object  //https://www.mql5.com/ru/forum/86921
+CTrade                  m_trade;                              // trading object
+CSymbolInfo             m_symbol;                             // symbol object
+
+input double             Signal_AC_Weight       =1.0;         // Accelerator Oscillator Weight [0...1.0]
+input double             Signal_AO_Weight       =1.0;         // Awesome Oscillator Weight [0...1.0]
+input double             Signal_SAR_Weight      =1.0;         // Parabolic SAR(0.02,0.2) Weight [0...1.0]
+input double             Signal_RSI_Weight      =1.0;         // Relative Strength Index(8,...) Weight [0...1.0]
+input double             Signal_Stoch_Weight    =1.0;         // Stochastic(8,3,3,...) Weight [0...1.0]
+
+input double             Signal_SAR_Step        =0.02;        // Parabolic SAR(0.02,0.2) Speed increment
+input double             Signal_SAR_Maximum     =0.2;         // Parabolic SAR(0.02,0.2) Maximum rate
+input int                Signal_RSI_PeriodRSI   =8;           // Relative Strength Index(8,...) Period of calculation
+ENUM_APPLIED_PRICE       Signal_RSI_Applied     =PRICE_CLOSE; // Relative Strength Index(8,...) Prices series
+input int                Signal_Stoch_PeriodK   =8;               // Stochastic(8,3,3,...) K-period
+input int                Signal_Stoch_PeriodD   =3;           // Stochastic(8,3,3,...) D-period
+input int                Signal_Stoch_PeriodSlow=3;           // Stochastic(8,3,3,...) Period of slowing
+ENUM_STO_PRICE           Signal_Stoch_Applied   =STO_LOWHIGH; // Stochastic(8,3,3,...) Prices to apply to
+
+input double             AC_Signal_1            =10;
+input double             AC_Signal_2            =10;
+input double             AC_Signal_3            =10;
+input double             AO_Signal_1            =10;
+input double             AO_Signal_2            =10;
+input double             AO_Signal_3            =10;   
+input double             AO_Signal_4            =10;   
+input double             SAR_Signal_1           =10;   
+input double             SAR_Signal_2           =10; 
+input double             RSI_Signal_1           =10;
+input double             RSI_Signal_2           =10;
+input double             RSI_Signal_3           =10;   
+input double             RSI_Signal_4           =10;  
+input double             RSI_Signal_5           =10;  
+input double             RSI_Signal_6           =10;  
+input double             ST_Signal_1            =10;
+input double             ST_Signal_2            =10;
+input double             ST_Signal_3            =10;   
+input double             ST_Signal_4            =10; 
+input double             ST_Signal_5            =10;
+
+//--- inputs for trailing
+double                  Trailing_ParabolicSAR_Step   =Signal_SAR_Step;          // Speed increment
+double                  Trailing_ParabolicSAR_Maximum=Signal_SAR_Maximum;       // Maximum rate
+
+//Объявление переменных для запоминания stop loss 
+
+double                  buf_dif_sl = -100;
+double                  last_sl = 0;
+int                     flag_night = 0;
+   
+//+----------------------------------------------+
+//| Входные параметры индикатора вариации        |
+//+----------------------------------------------+
+int iVarHandle; // хэндл индикатора iVar
+
+//+----------------------------------------------+
+//---- объявление динамических массивов, которые будут в 
+// дальнейшем использованы в качестве индикаторных буферов
+double ExtLineBuffer[];
+double TickVolumeBuffer[]; 
+
+
+//--- Check all trading objects para
+//+------------------------------------------------------------------+
+//| Global expert object                                             |
+//+------------------------------------------------------------------+
+CExpert ExtExpert;
+TCustomCriterionArray   *criterion_Ptr;
+//+------------------------------------------------------------------+
+//| Initialization function of the expert                            |
+//+------------------------------------------------------------------+
+int OnInit()
+  {
+//--- Initializing expert
+   if(!ExtExpert.Init(Symbol(),Period(),Expert_EveryTick,Expert_MagicNumber))
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing expert");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Creating signal
+   //--- Creating signal
+   CExpertSignal *signal=new CExpertSignal;
+   if(signal==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating signal");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//---
+   ExtExpert.InitSignal(signal);
+   signal.ThresholdOpen(Signal_ThresholdOpen);
+   signal.ThresholdClose(Signal_ThresholdClose);
+   signal.PriceLevel(Signal_PriceLevel);
+   signal.StopLevel(Signal_StopLevel);
+   signal.TakeLevel(Signal_TakeLevel);
+   signal.Expiration(Signal_Expiration);
+
+//--- Creating filter CSignalAC
+   CSignalAC *filter0=new CSignalAC;
+   if(filter0==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating filter0");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+   signal.AddFilter(filter0);
+
+//--- Set filter parameters
+   filter0.Weight(Signal_AC_Weight);
+   filter0.ModeTesting(Mode_Testing);
+   filter0.Pattern_0(AC_Signal_1);
+   filter0.Pattern_1(AC_Signal_2);   
+   filter0.Pattern_2(AC_Signal_3);    
+   
+//--- Creating filter CSignalAO
+   CSignalAO *filter1=new CSignalAO;
+   if(filter1==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating filter1");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+   signal.AddFilter(filter1);
+//--- Set filter parameters
+   filter1.Weight(Signal_AO_Weight);
+   filter1.ModeTesting(Mode_Testing);
+   filter1.Pattern_0(AO_Signal_1);
+   filter1.Pattern_1(AO_Signal_2);   
+   filter1.Pattern_2(AO_Signal_3);   
+   filter1.Pattern_3(AO_Signal_4); 
+   
+   
+//--- Creating filter CSignalSAR
+   CSignalSAR *filter2=new CSignalSAR;
+   if(filter2==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating filter2");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+   signal.AddFilter(filter2);
+//--- Set filter parameters
+   filter2.Step(Signal_SAR_Step);
+   filter2.Maximum(Signal_SAR_Maximum);
+   filter2.Weight(Signal_SAR_Weight);
+   filter2.ModeTesting(Mode_Testing); 
+   filter2.Pattern_0(SAR_Signal_1); 
+   filter2.Pattern_1(SAR_Signal_2);    
+     
+//--- Creating filter CSignalRSI
+   CSignalRSI *filter3=new CSignalRSI;
+   if(filter3==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating filter3");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+   signal.AddFilter(filter3);
+//--- Set filter parameters
+   filter3.PeriodRSI(Signal_RSI_PeriodRSI);
+   filter3.Applied(Signal_RSI_Applied);
+   filter3.Weight(Signal_RSI_Weight);
+   filter3.ModeTesting(Mode_Testing);  
+   filter3.Pattern_0(RSI_Signal_1); 
+   filter3.Pattern_1(RSI_Signal_2);     
+   filter3.Pattern_2(RSI_Signal_3);   
+   filter3.Pattern_3(RSI_Signal_4);   
+   filter3.Pattern_4(RSI_Signal_5); 
+   filter3.Pattern_5(RSI_Signal_6);     
+             
+//--- Creating filter CSignalStoch
+   CSignalStoch *filter4=new CSignalStoch;
+   if(filter4==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating filter4");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+   signal.AddFilter(filter4);
+//--- Set filter parameters
+   filter4.PeriodK(Signal_Stoch_PeriodK);
+   filter4.PeriodD(Signal_Stoch_PeriodD);
+   filter4.PeriodSlow(Signal_Stoch_PeriodSlow);
+   filter4.Applied(Signal_Stoch_Applied);
+   filter4.Weight(Signal_Stoch_Weight);
+   filter4.ModeTesting(Mode_Testing); 
+   filter4.Pattern_0(ST_Signal_1); 
+   filter4.Pattern_1(ST_Signal_2);     
+   filter4.Pattern_2(ST_Signal_3);   
+   filter4.Pattern_3(ST_Signal_4);   
+   filter4.Pattern_4(ST_Signal_5); 
+   
+//--- Creation of trailing object
+
+if (Trading_mode == 1){
+//--- Creation of trailing object
+   CTrailingFixedPips *trailing=new CTrailingFixedPips;
+   if(trailing==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating trailing");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Add trailing to expert (will be deleted automatically))
+   if(!ExtExpert.InitTrailing(trailing))
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing trailing");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Set trailing parameters
+   trailing.StopLevel(Trailing_FixedPips_StopLevel);
+   trailing.ProfitLevel(Trailing_FixedPips_ProfitLevel);
+//--- Creation of money object
+
+}else if (Trading_mode == 2){
+//--- Creation of trailing object
+   CTrailingPSAR *trailing=new CTrailingPSAR;
+   if(trailing==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating trailing");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Add trailing to expert (will be deleted automatically))
+   if(!ExtExpert.InitTrailing(trailing))
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing trailing");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Set trailing parameters
+   trailing.Step(Trailing_ParabolicSAR_Step);
+   trailing.Maximum(Trailing_ParabolicSAR_Maximum);
+};
+
+ if (Money_MyFixRisk_Percent > 0){
+
+   CMoneyFixedRisk *money=new CMoneyFixedRisk;
+   if(money==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating money");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Add money to expert (will be deleted automatically))
+   if(!ExtExpert.InitMoney(money))
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing money");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Set money parameters
+   money.Percent(Money_MyFixRisk_Percent);
+  }
+  
+  else if (Money_Factor1 > 0 && Money_Factor2 > 0){
+  //--- Creation of money object
+   CMoneyTwoFact *money=new CMoneyTwoFact;
+   if(money==NULL)
+     {
+      //--- failed
+      printf(__FUNCTION__+": error creating money");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Add money to expert (will be deleted automatically))
+   if(!ExtExpert.InitMoney(money))
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing money");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+//--- Set money parameters
+     money.Factor1(Money_Factor1);
+     money.Factor2(Money_Factor2);
+  
+  
+  }
+   
+//--- Check all trading objects parameters
+   if(!ExtExpert.ValidationSettings())
+     {
+      //--- failed
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+     
+//--- Tuning of all necessary indicators
+   if(!ExtExpert.InitIndicators())
+     {
+      //--- failed
+      printf(__FUNCTION__+": error initializing indicators");
+      ExtExpert.Deinit();
+      return(INIT_FAILED);
+     }
+     
+    //Optimization
+   criterion_Ptr = new TCustomCriterionArray();
+   if(CheckPointer(criterion_Ptr) == POINTER_INVALID)
+   {
+     return(-1);
+   }
+   
+    //criterion_Ptr.Add(new TBalanceSlopeCriterion(Symbol(),10000.0));
+    // criterion_Ptr.Add(new TTSSFCriterion());
+    //criterion_Ptr.Add(new TSimpleMinCriterion(STAT_TRADES, 30.0));
+
+   // if(Signal_MACD_PeriodFast < Signal_MACD_PeriodSlow) return(INIT_PARAMETERS_INCORRECT);
+    
+ //Фрактальный анализ
+
+//----  
+   iVarHandle=iCustom(Symbol(),Period(),"iVAR", N_iVar); 
+   //iVarHandle=iADX(Symbol(),Period(),5); 
+       
+//--- ok
+   return(INIT_SUCCEEDED);
+  }
+
+//+------------------------------------------------------------------+
+//| Deinitialization function of the expert                          |
+//+------------------------------------------------------------------+
+void OnDeinit(const int reason)
+  {
+   if(CheckPointer(criterion_Ptr) == POINTER_DYNAMIC)
+   {
+    delete(criterion_Ptr);
+   }
+   ExtExpert.Deinit();
+  }
+//+------------------------------------------------------------------+
+//| "Tick" event handler function                                    |
+//+------------------------------------------------------------------+
+void OnTick()
+  {
+   datetime cur_time_tik=TimeCurrent();
+
+   /*int shift=0; 
+   int start_flag=1;
+   
+   datetime time  = iTime(Symbol(),Period(),shift); 
+   double   open  = iOpen(Symbol(),Period(),shift); 
+   double   high1  = iHigh(Symbol(),Period(),shift); 
+   double   low1   = iLow(Symbol(),Period(),shift); 
+   double   close = iClose(NULL,PERIOD_CURRENT,shift); 
+   long     volume= iVolume(Symbol(),0,shift); 
+   int      bars  = iBars(NULL,0); 
+   double high = iHighest(NULL, 0, MODE_HIGH, 10, 1);
+   double low = iLowest(NULL, 0, MODE_LOW, 10, 1);
+ 
+   long timeseries[];    
+   if(CopyTickVolume(Symbol(),0,0,5,timeseries)<=0) {Print("CopyBufferMA1 error =",GetLastError());}
+   //int volumess=(double)timeseries[0]; 
+   
+   if ((double)timeseries[0]<inp_volume_level || high - low>inp_dif_bar_volume){
+     start_flag=1;
+   };
+    
+   int shift=0;
+   double   open_pos  = iOpen(Symbol(),Period(),shift);
+   datetime cur_time1  = iTime(Symbol(),Period(),0);  //Выдает текущее время на баре
+   datetime start_time=D'2018.06.10 12:00';
+   
+   double var_index;
+   
+   if(CopyBuffer(iVarHandle,0,0,5,ExtLineBuffer)<=0) {Print("CopyBufferMA1 error =",GetLastError());}  
+   ArraySetAsSeries(ExtLineBuffer,true);
+   var_index = ExtLineBuffer[0];
+   //Print("Проверка связи");
+   // Print("iVarHandlevar_index ", var_index);   
+   
+    if (PositionsTotal() == 0){
+       if(TimeToString(cur_time_tik) > StringToTime("10:10:00") && TimeToString(cur_time_tik) < StringToTime("18:38:00")){ //"10-30
+       
+         // Print("Зашли в новый тик =0 ");
+
+          find_strategy_2(var_index);
+  
+      };
+    }else if (PositionsTotal() > 0){
+    
+        if(TimeToString(cur_time_tik) > StringToTime("10:03:00")	&& TimeToString(cur_time_tik) < StringToTime("18:35:00")){ //10-20  "18:40:00"
+                 
+              if (flag_night == 1){
+              
+                   double newBid = SymbolInfoDouble(Symbol(),SYMBOL_BID);
+                   double newAsk = SymbolInfoDouble(Symbol(),SYMBOL_ASK);
+                   
+                   double   high1  = iHigh(Symbol(),Period(),shift); 
+                   double   low1   = iLow(Symbol(),Period(),shift); 
+                   //Print("newBid = ", newBid);
+                   //Print("newAsk = ", newAsk);
+                   
+                   if((m_position.PositionType()==POSITION_TYPE_BUY)){
+                              
+                              if (last_sl/100 >= high1){
+                              
+                                  Print("Закрываем, так как перескочил sl, newBid, ", last_sl/100," >= ", newBid);
+                                  m_trade.PositionClose(Symbol());
+                                
+                              }else{
+                              
+                                 // m_trade.PositionModify(Symbol(), newBid-buf_dif_sl/100, 0);
+                                 //   m_trade.PositionModify(Symbol(), last_sl/100, 0);
+                                    ExtExpert.OnTick(0000000000, 10);
+                              };
+                        
+                        
+                       }else{
+                       
+                             if (last_sl/100 <= low1){
+                               
+                                  Print("Закрываем, так как перескочил sl, newAsk, ", newAsk);
+                                  m_trade.PositionClose(Symbol());
+                                
+                              }else{
+                         
+                                 // m_trade.PositionModify(Symbol(), newAsk + buf_dif_sl/100, 0);   
+                                 //   m_trade.PositionModify(Symbol(), last_sl/100, 0);
+                                    ExtExpert.OnTick(0000000000, 10);
+                           };      
+                       };
+               
+                flag_night = 0;                      
+                       
+             }else{
+                 
+           
+           find_strategy_2(var_index);
+        };    
+   }
+        
+       else if (TimeToString(cur_time_tik) > StringToTime("18:35:00") && cur_time_tik > D'2018.01.10 12:00' && Symbol() == "SBER"){
+             if (flag_night == 0){
+ // Print("cur_time_tik ", cur_time_tik);
+                  double oldBid = SymbolInfoDouble(Symbol(),SYMBOL_BID);               
+                  double oldAsk = SymbolInfoDouble(Symbol(),SYMBOL_ASK);
+                  
+                //  Print("oldBid ", oldBid);
+                //  Print("oldAsk ", oldAsk);
+                                            
+                  //Print("Тип позиции ", m_position.PositionType());
+   
+                   
+                   if((m_position.PositionType()==POSITION_TYPE_BUY)){
+                       
+                       //Print("m_position.StopLoss() ", m_position.StopLoss());                      
+                       buf_dif_sl = MathRound(100*(oldAsk - m_position.StopLoss()));
+                       last_sl = MathRound(100*m_position.StopLoss()); //В пунктах                   
+                       //buf_dif_tp = MathRound(100*(m_position.TakeProfit() - oldAsk));                                           
+                        m_trade.PositionModify(Symbol(), 5.0, 0);
+                        //Print("buf_dif_sl ", buf_dif_sl);
+                        
+                       }else{
+                       
+                           //Print("m_position.StopLoss() ", m_position.StopLoss());
+                           buf_dif_sl = MathRound(100*(m_position.StopLoss() - oldBid));
+                           last_sl = MathRound(100*m_position.StopLoss()); //В пунктах 
+                           //buf_dif_tp = MathRound(100*(oldBid - m_position.TakeProfit()));    
+                           
+                       Print("buf_dif_sl ", buf_dif_sl);                   
+                       
+                           m_trade.PositionModify(Symbol(), 5000.0, 0);         
+                       };
+                       
+                   flag_night = 1;    
+             };
+         };
+     };
+  }
+//+------------------------------------------------------------------+
+//| "Trade" event handler function                                   |
+//+------------------------------------------------------------------+
+void OnTrade()
+  {   
+      ExtExpert.OnTrade();  
+  }
+//+------------------------------------------------------------------+
+//| "Timer" event handler function                                   |
+//+------------------------------------------------------------------+
+void OnTimer()
+  {
+      ExtExpert.OnTimer();
+  }
+//+------------------------------------------------------------------+
+//+------------------------------------------------------------------+
+//| Tester function                                                  |
+//Для создания пользовательских критериев оптимизации предназначена предопределенная функция OnTester(). 
+//Она автоматически вызывается после окончания очередного прохода тестирования эксперта на заданном интервале дат. 
+//+------------------------------------------------------------------+
+double OnTester()
+  {
+    //---
+    double  param = 0.0;
+    double coef = criterion_Ptr.GetCriterion();
+
+    //  Balance max + min Drawdown + Trades Number:
+    double  stat_profit = TesterStatistics(STAT_PROFIT); //Чистая прибыль по окончании тестирования, сумма STAT_GROSS_PROFIT и STAT_GROSS_LOSS (STAT_GROSS_LOSS всегда меньше или равно нулю) - double
+    double  min_dd = TesterStatistics(STAT_EQUITYDD_PERCENT); //STAT_BALANCEDD_PERCENT); //Максимальная просадка баланса в деньгах. В процессе торговли баланс может испытать множество просадок, берется наибольшее значение
+    double  max_dd = TesterStatistics(STAT_EQUITYDD_PERCENT);
+    double profit_factor = TesterStatistics(STAT_PROFIT_FACTOR); //Прибыльность – отношение STAT_GROSS_PROFIT/STAT_GROSS_LOSS. Если STAT_GROSS_LOSS=0, то прибыльность принимает значение DBL_MAX
+    double recovery_factor = TesterStatistics(STAT_RECOVERY_FACTOR);
+    double sharpe_ratio = TesterStatistics(STAT_SHARPE_RATIO);
+    double mat_expected = TesterStatistics(STAT_EXPECTED_PAYOFF); //математическое ожидание выигрыша
+    double stat_max = TesterStatistics(STAT_MAX_PROFITTRADE);
+    double  trades_number = TesterStatistics(STAT_TRADES);
+    double profit_trades = TesterStatistics(STAT_PROFIT_TRADES); // прибыльные трейды
+    double loss_trades = TesterStatistics(STAT_LOSS_TRADES);  //Убыточные трейды
+    int cnt_trades = 300; 
+
+    if(min_dd > 0.0)
+    {
+      min_dd = 1.0 / min_dd;  //от 0 до 100
+    };
+
+    if(trades_number < cnt_trades && )stat_profit < 0{ 
+       return(-1);   
+    }else{
+        param = recovery_factor * stat_profit * mat_expected * profit_trades; 
+    };    
+        
+    return(param);
+  }
+//+------------------------------------------------------------------+
+
+//Функция поиска стратегии
+void find_strategy_2(double var_index){
+
+
+   if (ivar_used == 0){
+      
+      ExtExpert.OnTick(1111100000, 10); 
+   
+   }else{
+   
+    //трендовая
+    if (var_index < 0.5 - var_ques){
+        ExtExpert.OnTick(1111100000, 10); 
+    };
+    
+    //флетовая
+    if (var_index > 0.5 + var_ques){
+         //ExtExpert.OnTick(my_komb_trend[Strategy_type_trend-1],8); 
+         ExtExpert.OnTick(0000011111, 10); 
+    };
+    
+     if (PositionsTotal() > 0 && var_index < 0.5 + var_ques && var_index > 0.5 - var_ques){
+          ExtExpert.OnTick(0000000000, 10);
+        //ExtExpert.CheckTrailingStop(); 
+      };   
+
+  };
+};
